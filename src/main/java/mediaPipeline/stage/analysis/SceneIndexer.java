@@ -37,7 +37,7 @@ public class SceneIndexer extends BaseStage {
                 "ffprobe",
                 "-v", "error",
                 "-select_streams", "v",
-                "-show_entries", "frame=pts_time,pkt_size,pict_type",
+                "-show_entries", "packet=pts_time,size,flags",
                 "-of", "csv=p=0",
                 source
         );
@@ -48,19 +48,18 @@ public class SceneIndexer extends BaseStage {
 
         }
 
-        List<double[]> frames = parseFrames(probe.stdout());
-        if (frames.isEmpty()) {
-            return StageResult.fail(name(), "No frames parsed from ffprobe output", elapsed(t));
+        List<double[]> packets = parsePackets(probe.stdout());
+        if (packets.isEmpty()) {
+            return StageResult.fail(name(), "No packets parsed from ffprobe output", elapsed(t));
         }
-
-        List<double[]> ranges = buildRanges(frames, duration);
-        log.info("Detected {} scenes via I-frame analysis", ranges.size());
+        List<double[]> ranges = buildRanges(packets, duration);
+        log.info("Detected {} scenes via keyframe analysis", ranges.size());
 
         List<Map<String, Object>> sceneList = new ArrayList<>();
         for (int i = 0; i < ranges.size(); i++) {
             double start = ranges.get(i)[0];
             double end   = ranges.get(i)[1];
-            int    avg   = computeAvgPacketSize(frames, start, end);
+            int avg = computeAvgPacketSize(packets, start, end);
 
             String level;
             int    crf;
@@ -68,16 +67,23 @@ public class SceneIndexer extends BaseStage {
             else if (avg > COMPLEXITY_HIGH) { level = "high";   crf = CRF_HIGH;   }
             else                            { level = "medium"; crf = CRF_MEDIUM; }
 
+            String sceneType = switch (level) {
+                case "high" -> "action";
+                case "low"  -> "establishing_shot";
+                default     -> "dialogue";
+            };
+
             sceneList.add(Map.of(
-                    "index",    i,
-                    "start",    round3(start),
-                    "end",      round3(end),
-                    "duration", round3(end - start),
+                    "index",      i,
+                    "start",      round3(start),
+                    "end",        round3(end),
+                    "duration",   round3(end - start),
+                    "scene_type", sceneType,
                     "complexity", Map.of(
                             "avg_packet_size", avg,
                             "level",           level,
                             "suggested_crf",   crf,
-                            "frame_count",     countFrames(frames, start, end)
+                            "frame_count",     countPackets(packets, start, end)
                     )
             ));
         }
@@ -114,45 +120,45 @@ public class SceneIndexer extends BaseStage {
         return StageResult.ok(name(), elapsed(t));
     }
 
-    private List<double[]> parseFrames(String stdout) {
-        List<double[]> frames = new ArrayList<>();
+    private List<double[]> parsePackets(String stdout) {
+        List<double[]> packets = new ArrayList<>();
         for (String line : stdout.split("\\r?\\n")) {
             String[] parts = line.strip().split(",");
             if (parts.length != 3) continue;
             try {
-                double ts       = Double.parseDouble(parts[0].trim());
-                double size     = Double.parseDouble(parts[1].trim());
-                double isIFrame = parts[2].trim().equals("I") ? 1.0 : 0.0;
-                frames.add(new double[]{ts, size, isIFrame});
+                double ts    = Double.parseDouble(parts[0].trim());
+                double size  = Double.parseDouble(parts[1].trim());
+                double isKey = parts[2].trim().contains("K") ? 1.0 : 0.0;
+                packets.add(new double[]{ts, size, isKey});
             } catch (NumberFormatException ignored) {}
         }
-        return frames;
+        return packets;
     }
 
-    private List<double[]> buildRanges(List<double[]> frames, double duration) {
+    private List<double[]> buildRanges(List<double[]> packets, double duration) {
         List<double[]> ranges = new ArrayList<>();
         double prev = 0.0;
-        for (double[] frame : frames) {
-            if (frame[2] == 1.0 && frame[0] > 0.0) {
-                ranges.add(new double[]{prev, frame[0]});
-                prev = frame[0];
+        for (double[] pkt : packets) {
+            if (pkt[2] == 1.0 && pkt[0] > 0.0) {
+                ranges.add(new double[]{prev, pkt[0]});
+                prev = pkt[0];
             }
         }
         ranges.add(new double[]{prev, duration});
         return ranges;
     }
 
-    private int computeAvgPacketSize(List<double[]> frames, double start, double end) {
-        return (int) frames.stream()
-                .filter(f -> f[0] >= start && f[0] < end)
-                .mapToDouble(f -> f[1])
+    private int computeAvgPacketSize(List<double[]> packets, double start, double end) {
+        return (int) packets.stream()
+                .filter(p -> p[0] >= start && p[0] < end)
+                .mapToDouble(p -> p[1])
                 .average()
                 .orElse(0);
     }
 
-    private int countFrames(List<double[]> frames, double start, double end) {
-        return (int) frames.stream()
-                .filter(f -> f[0] >= start && f[0] < end)
+    private int countPackets(List<double[]> packets, double start, double end) {
+        return (int) packets.stream()
+                .filter(p -> p[0] >= start && p[0] < end)
                 .count();
     }
 
