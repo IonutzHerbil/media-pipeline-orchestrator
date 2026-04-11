@@ -5,6 +5,8 @@ import mediaPipeline.stage.BaseStage;
 import mediaPipeline.stage.PipelineContext;
 import mediaPipeline.util.FfmpegUtil;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,6 +50,8 @@ public class Transcoder extends BaseStage {
 
     private static final int    DEFAULT_CRF   = 23;
     private static final String AUDIO_BITRATE = "128k";
+    private static final String NULL_SINK     = System.getProperty("os.name")
+            .toLowerCase().contains("win") ? "NUL" : "/dev/null";
 
     @Override
     public String name() { return "Transcoder"; }
@@ -106,6 +110,10 @@ public class Transcoder extends BaseStage {
 
         int    crf        = Math.max(0, baseCrf + codec.crfDelta);
         String outputPath = buildOutputPath(ctx, codec, res);
+        String label      = res.label + "_" + codec.folder;
+
+        if (codec == Codec.VP9)
+            return encodeVp9TwoPass(source, outputPath, res, crf, label);
 
         List<String> cmd = new ArrayList<>(List.of(
                 "ffmpeg", "-y",
@@ -115,19 +123,9 @@ public class Transcoder extends BaseStage {
         ));
 
         switch (codec) {
-            case H264, HEVC -> cmd.addAll(List.of(
-                    "-crf", String.valueOf(crf),
-                    "-preset", "fast",
-                    "-c:a", "aac", "-b:a", AUDIO_BITRATE
-            ));
-            case VP9 -> cmd.addAll(List.of(
-                    "-crf", String.valueOf(crf), "-b:v", "0",
-                    "-cpu-used", "4",
-                    "-deadline", "good",
-                    "-tile-columns", "2",
-                    "-threads", "4",
-                    "-c:a", "libopus", "-b:a", AUDIO_BITRATE
-            ));
+            case H264, HEVC -> cmd.addAll(List.of("-crf", String.valueOf(crf), "-preset", "fast",
+                    "-c:a", "aac", "-b:a", AUDIO_BITRATE));
+            default -> {}
         }
 
         cmd.add(outputPath);
@@ -136,6 +134,82 @@ public class Transcoder extends BaseStage {
         if (!result.ok())
             return EncodeResult.failure(outputPath, result.stderr());
 
+        return EncodeResult.success(outputPath);
+    }
+
+    private EncodeResult encodeVp9TwoPass(String source, String outputPath,
+                                          Resolution res, int crf, String label) {
+        String scaleFilter = "scale=" + res.width + ":-2";
+
+        String[] pass1 = {
+                "ffmpeg", "-y",
+                "-i", source,
+                "-vf", scaleFilter,
+                "-c:v", "libvpx-vp9",
+                "-crf", String.valueOf(crf), "-b:v", "0",
+                "-cpu-used", "8",
+                "-deadline", "good",
+                "-tile-columns", "2",
+                "-threads", "4",
+                "-pass", "1",
+                "-an",
+                "-f", "null", NULL_SINK
+        };
+
+        log.info("[{}] VP9 pass 1/2...", label);
+        FfmpegUtil.ProcessOutput p1 = FfmpegUtil.run(pass1);
+        if (!p1.ok())
+            return EncodeResult.failure(outputPath, "VP9 pass 1 failed: " + p1.stderr());
+
+        log.info("[{}] VP9 pass 2/2...", label);
+
+        String[] pass2 = {
+                "ffmpeg", "-y",
+                "-i", source,
+                "-vf", scaleFilter,
+                "-c:v", "libvpx-vp9",
+                "-crf", String.valueOf(crf), "-b:v", "0",
+                "-cpu-used", "8",
+                "-deadline", "good",
+                "-tile-columns", "2",
+                "-threads", "4",
+                "-pass", "2",
+                "-c:a", "libopus", "-b:a", AUDIO_BITRATE,
+                outputPath
+        };
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(pass2);
+            pb.redirectErrorStream(true);
+            Process proc = pb.start();
+
+            Thread progressThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream()))) {
+                    String line;
+                    long lastLog = 0;
+                    while ((line = reader.readLine()) != null) {
+                        if (line.startsWith("frame=") && System.currentTimeMillis() - lastLog > 5000) {
+                            log.info("[{}] VP9 pass 2 — {}", label, line.trim());
+                            lastLog = System.currentTimeMillis();
+                        }
+                    }
+                } catch (Exception ignored) {}
+            });
+            progressThread.setDaemon(true);
+            progressThread.start();
+
+            int exit = proc.waitFor();
+            progressThread.join(2000);
+
+            if (exit != 0)
+                return EncodeResult.failure(outputPath, "VP9 pass 2 failed (exit " + exit + ")");
+
+        } catch (Exception e) {
+            return EncodeResult.failure(outputPath, "VP9 pass 2 exception: " + e.getMessage());
+        }
+
+        log.info("[{}] VP9 two-pass complete.", label);
         return EncodeResult.success(outputPath);
     }
 
