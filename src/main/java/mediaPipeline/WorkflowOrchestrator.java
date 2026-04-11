@@ -19,6 +19,9 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class WorkflowOrchestrator {
 
@@ -28,6 +31,8 @@ public class WorkflowOrchestrator {
     private final List<StageResult> accumulator  = new ArrayList<>();
     private final PipelineContext   ctx;
     private final long              startMs      = System.currentTimeMillis();
+    private final ExecutorService   pool         =
+            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
     public WorkflowOrchestrator(VideoFile video, String outputRoot) {
         this.ctx = new PipelineContext(video, Path.of(outputRoot));
@@ -64,7 +69,7 @@ public class WorkflowOrchestrator {
     }
 
     private boolean runAnalysis() {
-        return runSequential(List.of(
+        return runParallel(List.of(
                 new SceneIndexer(),
                 new IntroOutroDetector(),
                 new CreditRoller()
@@ -94,13 +99,33 @@ public class WorkflowOrchestrator {
             StageResult result = stage.execute(ctx);
             accumulator.add(result);
             if (!result.success()) {
-                log.error("[{}] {} failed: {} — aborting phase.",
-                        currentPhase, stage.name(), result.message());
+                log.error("[{}] {} failed: {} — aborting.", currentPhase, stage.name(), result.message());
                 transition(PipelinePhase.FAILED);
                 return false;
             }
         }
         return true;
+    }
+
+    boolean runParallel(List<PipelineStage> stages) {
+        List<CompletableFuture<StageResult>> futures = stages.stream()
+                .map(stage -> CompletableFuture.supplyAsync(() -> stage.execute(ctx), pool))
+                .toList();
+
+        List<StageResult> results = futures.stream()
+                .map(CompletableFuture::join)
+                .toList();
+
+        accumulator.addAll(results);
+
+        boolean allOk = results.stream().allMatch(StageResult::success);
+        if (!allOk) {
+            results.stream()
+                    .filter(r -> !r.success())
+                    .forEach(r -> log.error("[{}] {} failed: {}", currentPhase, r.stageName(), r.message()));
+            transition(PipelinePhase.FAILED);
+        }
+        return allOk;
     }
 
     private void transition(PipelinePhase next) {
@@ -109,6 +134,7 @@ public class WorkflowOrchestrator {
     }
 
     private PipelineReport finish() {
+        pool.shutdown();
         long totalMs = System.currentTimeMillis() - startMs;
         return new PipelineReport(
                 ctx.video().movieId(),
