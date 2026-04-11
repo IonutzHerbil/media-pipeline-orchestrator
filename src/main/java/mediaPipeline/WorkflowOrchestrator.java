@@ -12,6 +12,7 @@ import mediaPipeline.stage.analysis.SceneIndexer;
 import mediaPipeline.stage.ingest.FormatValidator;
 import mediaPipeline.stage.ingest.IntegrityCheck;
 import mediaPipeline.stage.visuals.SceneComplexity;
+import mediaPipeline.stage.visuals.SpriteGenerator;
 import mediaPipeline.stage.visuals.Transcoder;
 
 import org.slf4j.Logger;
@@ -79,7 +80,7 @@ public class WorkflowOrchestrator {
 
     private boolean runVisuals() {
         if (!runSequential(List.of(new SceneComplexity()))) return false;
-        return runSequential(List.of(new Transcoder()));
+        return runParallel(List.of(new Transcoder(), new SpriteGenerator()));
     }
 
     private boolean runAudioText() {
