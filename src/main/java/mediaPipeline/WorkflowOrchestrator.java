@@ -12,6 +12,7 @@ import mediaPipeline.stage.analysis.SceneIndexer;
 import mediaPipeline.stage.audiotext.AIDubber;
 import mediaPipeline.stage.audiotext.SpeechToText;
 import mediaPipeline.stage.audiotext.Translator;
+import mediaPipeline.stage.compliance.SafetyScanner;
 import mediaPipeline.stage.ingest.FormatValidator;
 import mediaPipeline.stage.ingest.IntegrityCheck;
 import mediaPipeline.stage.visuals.SceneComplexity;
@@ -95,7 +96,7 @@ public class WorkflowOrchestrator {
     }
 
     private boolean runCompliance() {
-        return true;
+        return runSequential(List.of(new SafetyScanner()));
     }
 
     private boolean runPackaging() {
