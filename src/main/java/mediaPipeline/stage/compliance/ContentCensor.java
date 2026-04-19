@@ -73,18 +73,21 @@ public class ContentCensor extends BaseStage {
 
         Path output = ctx.outputRoot().resolve("video/h264/720p_h264_censored.mp4");
 
-        String audioFilter = bleepFilters.isEmpty() ? "acopy" : String.join(",", bleepFilters);
-        String videoFilter = blurFilters.isEmpty()  ? "null"  : String.join(",", blurFilters);
+        List<String> cmd = new ArrayList<>(List.of("ffmpeg", "-y", "-i", primary));
 
-        FfmpegUtil.ProcessOutput result = FfmpegUtil.run(
-                "ffmpeg", "-y",
-                "-i", primary,
-                "-af", audioFilter,
-                "-vf", videoFilter,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                output.toAbsolutePath().toString()
-        );
+        if (!bleepFilters.isEmpty())
+            cmd.addAll(List.of("-af", String.join(",", bleepFilters)));
+
+        if (!blurFilters.isEmpty())
+            cmd.addAll(List.of("-vf", String.join(",", blurFilters),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23"));
+        else
+            cmd.addAll(List.of("-c:v", "copy"));
+
+        cmd.addAll(List.of("-c:a", "aac", "-b:a", "128k",
+                output.toAbsolutePath().toString()));
+
+        FfmpegUtil.ProcessOutput result = FfmpegUtil.run(cmd.toArray(new String[0]));
 
         if (!result.ok())
             return StageResult.fail(name(), "Censoring failed: " + result.stderr(), elapsed(t));
