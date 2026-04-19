@@ -48,7 +48,7 @@ public class SpriteGenerator extends BaseStage {
                 "-i", source,
                 "-vf", "fps=1/" + interval + ",scale=" + THUMB_WIDTH + ":-1",
                 "-q:v", "5",
-                thumbDir.toAbsolutePath() + "\\thumb_%04d.jpg"
+                thumbDir.resolve("thumb_%04d.jpg").toAbsolutePath().toString()
         );
 
         if (!thumbResult.ok())
@@ -72,7 +72,7 @@ public class SpriteGenerator extends BaseStage {
 
         FfmpegUtil.ProcessOutput spriteResult = FfmpegUtil.run(
                 "ffmpeg", "-y",
-                "-i", thumbDir.toAbsolutePath() + "\\thumb_%04d.jpg",
+                "-i", thumbDir.resolve("thumb_%04d.jpg").toAbsolutePath().toString(),
                 "-filter_complex", "tile=" + SPRITE_COLUMNS + "x" + actualRows,
                 "-frames:v", "1",
                 spriteFile.toAbsolutePath().toString()
