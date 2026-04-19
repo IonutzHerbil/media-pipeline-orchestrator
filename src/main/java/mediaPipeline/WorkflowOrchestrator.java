@@ -18,6 +18,8 @@ import mediaPipeline.stage.compliance.RegionalBranding;
 import mediaPipeline.stage.compliance.SafetyScanner;
 import mediaPipeline.stage.ingest.FormatValidator;
 import mediaPipeline.stage.ingest.IntegrityCheck;
+import mediaPipeline.stage.packaging.DRMWrapper;
+import mediaPipeline.stage.packaging.ManifestBuilder;
 import mediaPipeline.stage.visuals.SceneComplexity;
 import mediaPipeline.stage.visuals.SpriteGenerator;
 import mediaPipeline.stage.visuals.Transcoder;
@@ -108,7 +110,10 @@ public class WorkflowOrchestrator {
     }
 
     private boolean runPackaging() {
-        return true;
+        return runSequential(List.of(
+                new DRMWrapper(),
+                new ManifestBuilder()
+        ));
     }
 
     boolean runSequential(List<PipelineStage> stages) {
@@ -160,5 +165,4 @@ public class WorkflowOrchestrator {
                 totalMs);
     }
 
-    PipelineContext context() { return ctx; }
 }
