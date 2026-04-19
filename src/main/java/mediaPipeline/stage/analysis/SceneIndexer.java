@@ -115,6 +115,7 @@ public class SceneIndexer extends BaseStage {
         }
 
         ctx.put("scene_analysis_path", outputPath.toAbsolutePath().toString());
+        ctx.put("scene_count", sceneList.size());
         log.info("scene_analysis.json → {} ({} scenes)", outputPath, sceneList.size());
 
         return StageResult.ok(name(), elapsed(t));
