@@ -10,8 +10,11 @@ import mediaPipeline.stage.analysis.CreditRoller;
 import mediaPipeline.stage.analysis.IntroOutroDetector;
 import mediaPipeline.stage.analysis.SceneIndexer;
 import mediaPipeline.stage.audiotext.AIDubber;
+import mediaPipeline.stage.audiotext.DubbedVideoMixer;
 import mediaPipeline.stage.audiotext.SpeechToText;
 import mediaPipeline.stage.audiotext.Translator;
+import mediaPipeline.stage.compliance.ContentCensor;
+import mediaPipeline.stage.compliance.RegionalBranding;
 import mediaPipeline.stage.compliance.SafetyScanner;
 import mediaPipeline.stage.ingest.FormatValidator;
 import mediaPipeline.stage.ingest.IntegrityCheck;
@@ -91,12 +94,17 @@ public class WorkflowOrchestrator {
         return runSequential(List.of(
                 new SpeechToText(),
                 new Translator(),
-                new AIDubber()
+                new AIDubber(),
+                new DubbedVideoMixer()
         ));
     }
 
     private boolean runCompliance() {
-        return runSequential(List.of(new SafetyScanner()));
+        return runSequential(List.of(
+                new SafetyScanner(),
+                new ContentCensor(),
+                new RegionalBranding()
+        ));
     }
 
     private boolean runPackaging() {
