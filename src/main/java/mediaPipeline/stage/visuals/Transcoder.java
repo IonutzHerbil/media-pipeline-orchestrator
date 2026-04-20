@@ -6,7 +6,9 @@ import mediaPipeline.stage.PipelineContext;
 import mediaPipeline.util.FfmpegUtil;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -108,9 +110,18 @@ public class Transcoder extends BaseStage {
         if (srcWidth < res.width)
             return EncodeResult.skipped(buildOutputPath(ctx, codec, res));
 
-        int    crf        = Math.max(0, baseCrf + codec.crfDelta);
         String outputPath = buildOutputPath(ctx, codec, res);
-        String label      = res.label + "_" + codec.folder;
+
+        try {
+            Path outputFile = Path.of(outputPath);
+            if (Files.exists(outputFile) && Files.size(outputFile) > 0) {
+                log.info("Cache hit — skipping: {}", outputFile.getFileName());
+                return EncodeResult.success(outputPath);
+            }
+        } catch (IOException ignored) {}
+
+        int    crf   = Math.max(0, baseCrf + codec.crfDelta);
+        String label = res.label + "_" + codec.folder;
 
         if (codec == Codec.VP9)
             return encodeVp9TwoPass(source, outputPath, res, crf, label);
@@ -123,7 +134,8 @@ public class Transcoder extends BaseStage {
         ));
 
         switch (codec) {
-            case H264, HEVC -> cmd.addAll(List.of("-crf", String.valueOf(crf), "-preset", "fast",
+            case H264, HEVC -> cmd.addAll(List.of(
+                    "-crf", String.valueOf(crf), "-preset", "fast",
                     "-c:a", "aac", "-b:a", AUDIO_BITRATE));
             default -> {}
         }

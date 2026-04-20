@@ -89,16 +89,11 @@ public class WorkflowOrchestrator {
 
     private boolean runVisuals() {
         if (!runSequential(List.of(new SceneComplexity()))) return false;
-        return runParallel(List.of(new Transcoder(), new SpriteGenerator()));
+        return runParallel(List.of(new Transcoder(), new SpriteGenerator(), new SpeechToText()));
     }
 
     private boolean runAudioText() {
-        return runSequential(List.of(
-                new SpeechToText(),
-                new Translator(),
-                new AIDubber(),
-                new DubbedVideoMixer()
-        ));
+        return runSequential(List.of(new Translator(), new AIDubber(), new DubbedVideoMixer()));
     }
 
     private boolean runCompliance() {
