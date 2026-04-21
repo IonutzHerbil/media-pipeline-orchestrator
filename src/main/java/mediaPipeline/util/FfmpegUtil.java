@@ -14,15 +14,19 @@ public class FfmpegUtil {
       ProcessBuilder pb = new ProcessBuilder(cmd);
       Process proc = pb.start();
 
-      CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(() ->
-              new BufferedReader(new InputStreamReader(proc.getInputStream()))
-                      .lines().collect(Collectors.joining("\n"))
-      );
+      CompletableFuture<String> stdoutFuture =
+          CompletableFuture.supplyAsync(
+              () ->
+                  new BufferedReader(new InputStreamReader(proc.getInputStream()))
+                      .lines()
+                      .collect(Collectors.joining("\n")));
 
-      CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(() ->
-              new BufferedReader(new InputStreamReader(proc.getErrorStream()))
-                      .lines().collect(Collectors.joining("\n"))
-      );
+      CompletableFuture<String> stderrFuture =
+          CompletableFuture.supplyAsync(
+              () ->
+                  new BufferedReader(new InputStreamReader(proc.getErrorStream()))
+                      .lines()
+                      .collect(Collectors.joining("\n")));
 
       int exit = proc.waitFor();
       String stdout = stdoutFuture.get();

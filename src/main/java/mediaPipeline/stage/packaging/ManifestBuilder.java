@@ -29,13 +29,13 @@ public class ManifestBuilder extends BaseStage {
     manifest.put("created_at", Instant.now().toString());
 
     manifest.put(
-        "source",
-        Map.of(
-            "checksum_sha256", orEmpty(ctx, "source_checksum"),
-            "duration_s", orZero(ctx, "duration"),
-            "resolution", ctx.get("width") + "x" + ctx.get("height"),
-            "codec", orEmpty(ctx, "video_codec"),
-            "container", orEmpty(ctx, "container_format")));
+            "source",
+            Map.of(
+                    "checksum_sha256", orEmpty(ctx, "source_checksum"),
+                    "duration_s", orZero(ctx, "duration"),
+                    "resolution", ctx.get("width") + "x" + ctx.get("height"),
+                    "codec", orEmpty(ctx, "video_codec"),
+                    "container", orEmpty(ctx, "container_format")));
 
     Map<String, Object> analysis = new LinkedHashMap<>();
     analysis.put("intro_end_ts", orZero(ctx, "intro_end_ts"));
@@ -54,48 +54,53 @@ public class ManifestBuilder extends BaseStage {
       for (String path : encodedAssets) {
         Path p = Path.of(path);
         videoAssets.add(
-            Map.of(
-                "path", rel(ctx, p),
-                "size_bytes", fileSize(p),
-                "checksum", checksum(p)));
+                Map.of(
+                        "path", rel(ctx, p),
+                        "size_bytes", fileSize(p),
+                        "checksum", checksum(p)));
       }
     }
 
     manifest.put(
-        "assets",
-        Map.of(
-            "video", videoAssets,
-            "images",
-                Map.of(
-                    "sprite_map", rel(ctx, ctx.outputRoot().resolve("images/sprite_map.jpg")),
-                    "thumbnail_count", orZero(ctx, "thumbnail_count"),
-                    "thumbnail_interval", orZero(ctx, "thumb_interval_s")),
-            "text",
-                Map.of(
-                    "source_transcript",
-                    "text/source_transcript.txt",
-                    "translations",
-                    listTextFiles(ctx.outputRoot().resolve("text"))),
-            "audio",
-                Map.of(
-                    "dub_path", relOrEmpty(ctx, "dub_path"),
-                    "dub_lang", orEmpty(ctx, "dub_lang"))));
+            "assets",
+            Map.of(
+                    "video", videoAssets,
+                    "images",
+                    Map.of(
+                            "sprite_map", rel(ctx, ctx.outputRoot().resolve("images/sprite_map.jpg")),
+                            "thumbnail_count", orZero(ctx, "thumbnail_count"),
+                            "thumbnail_interval", orZero(ctx, "thumb_interval_s")),
+                    "text",
+                    Map.of(
+                            "source_transcript",
+                            "text/source_transcript.txt",
+                            "translations",
+                            listTextFiles(ctx.outputRoot().resolve("text"))),
+                    "audio",
+                    Map.of(
+                            "dub_path", relOrEmpty(ctx, "dub_path"),
+                            "dub_lang", orEmpty(ctx, "dub_lang"))));
 
     manifest.put(
-        "compliance",
-        Map.of(
-            "safety_flags", ctx.get("safety_flags") != null ? ctx.get("safety_flags") : List.of(),
-            "censored_video", relOrEmpty(ctx, "censored_video"),
-            "branded_asset", relOrEmpty(ctx, "branded_asset")));
+            "compliance",
+            Map.of(
+                    "safety_flags", ctx.get("safety_flags") != null ? ctx.get("safety_flags") : List.of(),
+                    "censored_video", relOrEmpty(ctx, "censored_video"),
+                    "branded_asset", relOrEmpty(ctx, "branded_asset")));
 
     @SuppressWarnings("unchecked")
-    List<String> encryptedAssets = (List<String>) ctx.get("encrypted_assets");
+    List<Map<String, String>> encryptedAssets =
+            (List<Map<String, String>>) ctx.get("encrypted_assets");
     List<Map<String, Object>> encList = new ArrayList<>();
     if (encryptedAssets != null) {
-      for (String path : encryptedAssets) {
-        encList.add(Map.of("path", rel(ctx, Path.of(path))));
+      for (Map<String, String> entry : encryptedAssets) {
+        String path = entry.get("path");
+        encList.add(Map.of(
+                "path", rel(ctx, Path.of(path)),
+                "iv",   entry.getOrDefault("iv", "")));
       }
     }
+
     manifest.put("drm", Map.of("method", orEmpty(ctx, "drm_method"), "encrypted_assets", encList));
 
     Path output = ctx.outputRoot().resolve("metadata/manifest.json");
@@ -103,7 +108,7 @@ public class ManifestBuilder extends BaseStage {
       new ObjectMapper().writerWithDefaultPrettyPrinter().writeValue(output.toFile(), manifest);
     } catch (IOException e) {
       return StageResult.fail(
-          name(), "Could not write manifest.json: " + e.getMessage(), elapsed(t));
+              name(), "Could not write manifest.json: " + e.getMessage(), elapsed(t));
     }
 
     log.info("Manifest → {}", output);
@@ -150,9 +155,9 @@ public class ManifestBuilder extends BaseStage {
   private List<String> listTextFiles(Path dir) {
     try {
       return Files.list(dir)
-          .filter(p -> p.toString().endsWith(".txt"))
-          .map(p -> p.getFileName().toString())
-          .toList();
+              .filter(p -> p.toString().endsWith(".txt"))
+              .map(p -> p.getFileName().toString())
+              .toList();
     } catch (IOException e) {
       return List.of();
     }

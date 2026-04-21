@@ -1,12 +1,11 @@
 package mediaPipeline.stage;
 
-import mediaPipeline.model.VideoFile;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import mediaPipeline.model.VideoFile;
 
 public class PipelineContext {
 
@@ -29,10 +28,23 @@ public class PipelineContext {
     Files.createDirectories(outputRoot.resolve("metadata"));
   }
 
-  public VideoFile video()      { return video; }
-  public Path      outputRoot() { return outputRoot; }
+  public VideoFile video() {
+    return video;
+  }
 
-  public void   put(String key, Object v) { metadata.put(key, v); }
-  public Object get(String key)           { return metadata.get(key); }
-  public String getString(String key)     { return (String) metadata.get(key); }
+  public Path outputRoot() {
+    return outputRoot;
+  }
+
+  public void put(String key, Object v) {
+    metadata.put(key, v);
+  }
+
+  public Object get(String key) {
+    return metadata.get(key);
+  }
+
+  public String getString(String key) {
+    return (String) metadata.get(key);
+  }
 }

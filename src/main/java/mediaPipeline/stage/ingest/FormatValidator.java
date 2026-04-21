@@ -1,13 +1,12 @@
 package mediaPipeline.stage.ingest;
 
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import mediaPipeline.model.StageResult;
 import mediaPipeline.stage.BaseStage;
 import mediaPipeline.stage.PipelineContext;
 import mediaPipeline.util.FfmpegUtil;
-
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class FormatValidator extends BaseStage {
 

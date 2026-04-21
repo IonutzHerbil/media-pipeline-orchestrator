@@ -1,101 +1,97 @@
 package mediaPipeline.stage.packaging;
 
-import mediaPipeline.model.StageResult;
-import mediaPipeline.stage.BaseStage;
-import mediaPipeline.stage.PipelineContext;
-
-import javax.crypto.Cipher;
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.*;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import mediaPipeline.model.StageResult;
+import mediaPipeline.stage.BaseStage;
+import mediaPipeline.stage.PipelineContext;
 
 public class DRMWrapper extends BaseStage {
 
-    private static final String ALGORITHM = "AES/CTR/NoPadding";
-    private static final int KEY_SIZE = 256;
-    private static final int IV_SIZE = 16;
-    private static final int BUFFER = 64 * 1024;
+  private static final String ALGORITHM = "AES/CTR/NoPadding";
+  private static final int KEY_SIZE = 256;
+  private static final int IV_SIZE = 16;
+  private static final int BUFFER = 64 * 1024;
 
-    @Override
-    public String name() {
-        return "DRMWrapper";
+  @Override
+  public String name() {
+    return "DRMWrapper";
+  }
+
+  @Override
+  protected StageResult run(PipelineContext ctx) {
+    long t = System.currentTimeMillis();
+
+    @SuppressWarnings("unchecked")
+    List<String> encodedAssets = (List<String>) ctx.get("encoded_assets");
+
+    if (encodedAssets == null || encodedAssets.isEmpty()) {
+      return StageResult.fail(
+              name(), "encoded_assets missing: Transcoder must run first", elapsed(t));
     }
 
-    @Override
-    protected StageResult run(PipelineContext ctx) {
-        long t = System.currentTimeMillis();
+    try {
+      KeyGenerator kg = KeyGenerator.getInstance("AES");
+      kg.init(KEY_SIZE);
+      SecretKey key = kg.generateKey();
 
-        @SuppressWarnings("unchecked")
-        List<String> encodedAssets = (List<String>) ctx.get("encoded_assets");
+      List<Map<String, String>> encryptedAssets = new ArrayList<>();
 
-        if (encodedAssets == null || encodedAssets.isEmpty()) {
-            return StageResult.fail(name(),
-                    "encoded_assets missing: Transcoder must run first",
-                    elapsed(t));
-        }
+      for (String assetPath : encodedAssets) {
+        Path src = Path.of(assetPath);
+        Path enc = Path.of(assetPath + ".enc");
 
-        try {
-            KeyGenerator kg = KeyGenerator.getInstance("AES");
-            kg.init(KEY_SIZE);
-            SecretKey key = kg.generateKey();
+        byte[] iv = new byte[IV_SIZE];
+        new SecureRandom().nextBytes(iv);
 
-            List<Map<String, String>> encryptedAssets = new ArrayList<>();
+        encrypt(src, enc, key, iv);
 
-            for (String assetPath : encodedAssets) {
-                Path src = Path.of(assetPath);
-                Path enc = Path.of(assetPath + ".enc");
-
-                byte[] iv = new byte[IV_SIZE];
-                new SecureRandom().nextBytes(iv);
-
-                encrypt(src, enc, key, iv);
-
-                encryptedAssets.add(Map.of(
+        encryptedAssets.add(
+                Map.of(
                         "path", enc.toString(),
-                        "iv", Base64.getEncoder().encodeToString(iv)
-                ));
+                        "iv", Base64.getEncoder().encodeToString(iv)));
 
-                log.info("Encrypted: {}", enc.getFileName());
-            }
+        log.info("Encrypted: {}", enc.getFileName());
+      }
 
-            ctx.put("drm_key", Base64.getEncoder().encodeToString(key.getEncoded()));
-            ctx.put("encrypted_assets", encryptedAssets);
-            ctx.put("drm_method", "AES-256-CTR");
+      ctx.put("drm_key", Base64.getEncoder().encodeToString(key.getEncoded()));
+      ctx.put("encrypted_assets", encryptedAssets);
+      ctx.put("drm_method", "AES-256-CTR");
 
-            log.info("DRM complete: {} assets encrypted", encryptedAssets.size());
+      log.info("DRM complete: {} assets encrypted", encryptedAssets.size());
 
-            return StageResult.ok(name(), elapsed(t));
+      return StageResult.ok(name(), elapsed(t));
 
-        } catch (Exception e) {
-            return StageResult.fail(name(),
-                    "DRM failed: " + e.getMessage(),
-                    elapsed(t));
-        }
+    } catch (Exception e) {
+      return StageResult.fail(name(), "DRM failed: " + e.getMessage(), elapsed(t));
     }
+  }
 
-    private void encrypt(Path src, Path dst, SecretKey key, byte[] iv) throws Exception {
-        Cipher cipher = Cipher.getInstance(ALGORITHM);
-        cipher.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(iv));
+  private void encrypt(Path src, Path dst, SecretKey key, byte[] iv) throws Exception {
+    Cipher cipher = Cipher.getInstance(ALGORITHM);
+    cipher.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(iv));
 
-        try (InputStream in = Files.newInputStream(src);
-             OutputStream out = Files.newOutputStream(dst)) {
+    try (InputStream in = Files.newInputStream(src);
+         OutputStream out = Files.newOutputStream(dst)) {
 
-            byte[] buf = new byte[BUFFER];
-            int read;
+      byte[] buf = new byte[BUFFER];
+      int read;
 
-            while ((read = in.read(buf)) != -1) {
-                byte[] enc = cipher.update(buf, 0, read);
-                if (enc != null) out.write(enc);
-            }
+      while ((read = in.read(buf)) != -1) {
+        byte[] enc = cipher.update(buf, 0, read);
+        if (enc != null) out.write(enc);
+      }
 
-            byte[] finalBytes = cipher.doFinal();
-            if (finalBytes != null) out.write(finalBytes);
-        }
+      byte[] finalBytes = cipher.doFinal();
+      if (finalBytes != null) out.write(finalBytes);
     }
+  }
 }

@@ -1,5 +1,12 @@
 package mediaPipeline;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import mediaPipeline.model.PipelinePhase;
 import mediaPipeline.model.PipelineReport;
 import mediaPipeline.model.StageResult;
@@ -23,152 +30,124 @@ import mediaPipeline.stage.packaging.ManifestBuilder;
 import mediaPipeline.stage.visuals.SceneComplexity;
 import mediaPipeline.stage.visuals.SpriteGenerator;
 import mediaPipeline.stage.visuals.Transcoder;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 public class WorkflowOrchestrator {
 
-    private static final Logger log = LoggerFactory.getLogger(WorkflowOrchestrator.class);
+  private static final Logger log = LoggerFactory.getLogger(WorkflowOrchestrator.class);
 
-    private PipelinePhase           currentPhase = PipelinePhase.IDLE;
-    private final List<StageResult> accumulator  = new ArrayList<>();
-    private final PipelineContext   ctx;
-    private final long              startMs      = System.currentTimeMillis();
-    private final ExecutorService   pool         =
-            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+  private PipelinePhase currentPhase = PipelinePhase.IDLE;
+  private final List<StageResult> accumulator = new ArrayList<>();
+  private final PipelineContext ctx;
+  private final long startMs = System.currentTimeMillis();
+  private ExecutorService pool =
+      Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
-    public WorkflowOrchestrator(VideoFile video, String outputRoot) {
-        this.ctx = new PipelineContext(video, Path.of(outputRoot));
+  public WorkflowOrchestrator(VideoFile video, String outputRoot) {
+    this.ctx = new PipelineContext(video, Path.of(outputRoot));
+  }
+
+  public PipelineReport run() {
+    try {
+      ctx.init();
+    } catch (IOException e) {
+      log.error("Failed to create output directories: {}", e.getMessage());
+      transition(PipelinePhase.FAILED);
+      return finish();
     }
 
-    public PipelineReport run() {
-        try {
-            ctx.init();
-        } catch (IOException e) {
-            log.error("Failed to create output directories: {}", e.getMessage());
-            transition(PipelinePhase.FAILED);
-            return finish();
-        }
+    pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
-        pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    transition(PipelinePhase.INGEST);
+    if (!runIngest()) return finish();
 
-        transition(PipelinePhase.INGEST);
-        if (!runIngest())      return finish();
+    transition(PipelinePhase.ANALYSIS);
+    if (!runAnalysis()) return finish();
 
-        transition(PipelinePhase.ANALYSIS);
-        if (!runAnalysis())    return finish();
+    transition(PipelinePhase.VISUALS);
+    if (!runVisuals()) return finish();
 
-        transition(PipelinePhase.VISUALS);
-        if (!runVisuals())     return finish();
+    transition(PipelinePhase.AUDIO_TEXT);
+    if (!runAudioText()) return finish();
 
-        transition(PipelinePhase.AUDIO_TEXT);
-        if (!runAudioText())   return finish();
+    transition(PipelinePhase.COMPLIANCE);
+    if (!runCompliance()) return finish();
 
-        transition(PipelinePhase.COMPLIANCE);
-        if (!runCompliance())  return finish();
+    transition(PipelinePhase.PACKAGING);
+    if (!runPackaging()) return finish();
 
-        transition(PipelinePhase.PACKAGING);
-        if (!runPackaging())   return finish();
+    transition(PipelinePhase.COMPLETED);
+    return finish();
+  }
 
-        transition(PipelinePhase.COMPLETED);
-        return finish();
+  private boolean runIngest() {
+    return runSequential(List.of(new IntegrityCheck(), new FormatValidator()));
+  }
+
+  private boolean runAnalysis() {
+    return runParallel(List.of(new SceneIndexer(), new IntroOutroDetector(), new CreditRoller()));
+  }
+
+  private boolean runVisuals() {
+    if (!runSequential(List.of(new SceneComplexity()))) return false;
+    return runParallel(List.of(new Transcoder(), new SpriteGenerator(), new SpeechToText()));
+  }
+
+  private boolean runAudioText() {
+    return runSequential(List.of(new Translator(), new AIDubber(), new DubbedVideoMixer()));
+  }
+
+  private boolean runCompliance() {
+    return runSequential(List.of(new SafetyScanner(), new ContentCensor(), new RegionalBranding()));
+  }
+
+  private boolean runPackaging() {
+    return runSequential(List.of(new DRMWrapper(), new ManifestBuilder()));
+  }
+
+  boolean runSequential(List<PipelineStage> stages) {
+    for (PipelineStage stage : stages) {
+      StageResult result = stage.execute(ctx);
+      accumulator.add(result);
+      if (!result.success()) {
+        log.error("[{}] {} failed: {}: aborting.", currentPhase, stage.name(), result.message());
+        transition(PipelinePhase.FAILED);
+        return false;
+      }
     }
+    return true;
+  }
 
-    private boolean runIngest() {
-        return runSequential(List.of(
-                new IntegrityCheck(),
-                new FormatValidator()
-        ));
+  boolean runParallel(List<PipelineStage> stages) {
+    List<CompletableFuture<StageResult>> futures =
+        stages.stream()
+            .map(stage -> CompletableFuture.supplyAsync(() -> stage.execute(ctx), pool))
+            .toList();
+
+    List<StageResult> results = futures.stream().map(CompletableFuture::join).toList();
+
+    accumulator.addAll(results);
+
+    boolean allOk = results.stream().allMatch(StageResult::success);
+    if (!allOk) {
+      results.stream()
+          .filter(r -> !r.success())
+          .forEach(r -> log.error("[{}] {} failed: {}", currentPhase, r.stageName(), r.message()));
+      transition(PipelinePhase.FAILED);
     }
+    return allOk;
+  }
 
-    private boolean runAnalysis() {
-        return runParallel(List.of(
-                new SceneIndexer(),
-                new IntroOutroDetector(),
-                new CreditRoller()
-        ));
-    }
+  private void transition(PipelinePhase next) {
+    log.info("Phase: {} → {}", currentPhase, next);
+    currentPhase = next;
+  }
 
-    private boolean runVisuals() {
-        if (!runSequential(List.of(new SceneComplexity()))) return false;
-        return runParallel(List.of(new Transcoder(), new SpriteGenerator(), new SpeechToText()));
-    }
-
-    private boolean runAudioText() {
-        return runSequential(List.of(new Translator(), new AIDubber(), new DubbedVideoMixer()));
-    }
-
-    private boolean runCompliance() {
-        return runSequential(List.of(
-                new SafetyScanner(),
-                new ContentCensor(),
-                new RegionalBranding()
-        ));
-    }
-
-    private boolean runPackaging() {
-        return runSequential(List.of(
-                new DRMWrapper(),
-                new ManifestBuilder()
-        ));
-    }
-
-    boolean runSequential(List<PipelineStage> stages) {
-        for (PipelineStage stage : stages) {
-            StageResult result = stage.execute(ctx);
-            accumulator.add(result);
-            if (!result.success()) {
-                log.error("[{}] {} failed: {} — aborting.", currentPhase, stage.name(), result.message());
-                transition(PipelinePhase.FAILED);
-                return false;
-            }
-        }
-        return true;
-    }
-
-    boolean runParallel(List<PipelineStage> stages) {
-        List<CompletableFuture<StageResult>> futures = stages.stream()
-                .map(stage -> CompletableFuture.supplyAsync(() -> stage.execute(ctx), pool))
-                .toList();
-
-        List<StageResult> results = futures.stream()
-                .map(CompletableFuture::join)
-                .toList();
-
-        accumulator.addAll(results);
-
-        boolean allOk = results.stream().allMatch(StageResult::success);
-        if (!allOk) {
-            results.stream()
-                    .filter(r -> !r.success())
-                    .forEach(r -> log.error("[{}] {} failed: {}", currentPhase, r.stageName(), r.message()));
-            transition(PipelinePhase.FAILED);
-        }
-        return allOk;
-    }
-
-    private void transition(PipelinePhase next) {
-        log.info("Phase: {} → {}", currentPhase, next);
-        currentPhase = next;
-    }
-
-    private PipelineReport finish() {
-        if (pool != null) pool.shutdown();
-        long totalMs = System.currentTimeMillis() - startMs;
-        return new PipelineReport(
-                ctx.video().movieId(),
-                currentPhase,
-                List.copyOf(accumulator),
-                totalMs);
-    }
-
+  private PipelineReport finish() {
+    if (pool != null) pool.shutdown();
+    long totalMs = System.currentTimeMillis() - startMs;
+    return new PipelineReport(
+        ctx.video().movieId(), currentPhase, List.copyOf(accumulator), totalMs);
+  }
 }

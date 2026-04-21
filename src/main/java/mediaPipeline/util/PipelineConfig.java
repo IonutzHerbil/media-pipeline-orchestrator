@@ -8,21 +8,22 @@ import java.util.Properties;
 
 public class PipelineConfig {
 
-    private static final Properties props = new Properties();
+  private static final Properties props = new Properties();
 
-    static {
-        try (InputStream is = Files.newInputStream(Path.of("pipeline.properties"))) {
-            props.load(is);
-        } catch (IOException ignored) {}
+  static {
+    try (InputStream is = Files.newInputStream(Path.of("pipeline.properties"))) {
+      props.load(is);
+    } catch (IOException ignored) {
     }
+  }
 
-    private PipelineConfig() {}
+  private PipelineConfig() {}
 
-    public static String scriptsDir() {
-        return props.getProperty("workers.scripts.dir", "../media-pipeline-workers/scripts");
-    }
+  public static String scriptsDir() {
+    return props.getProperty("workers.scripts.dir", "../media-pipeline-workers/scripts");
+  }
 
-    public static String pythonExecutable() {
-        return props.getProperty("python.executable", "python3");
-    }
+  public static String pythonExecutable() {
+    return props.getProperty("python.executable", "python3");
+  }
 }
