@@ -151,7 +151,9 @@ public class Transcoder extends BaseStage {
 
     private EncodeResult encodeVp9TwoPass(String source, String outputPath,
                                           Resolution res, int crf, String label) {
-        String scaleFilter = "scale=" + res.width + ":-2";
+        String scaleFilter   = "scale=" + res.width + ":-2";
+        String passlogPrefix = Path.of(outputPath).getParent()
+                .resolve("vp9_2pass_" + label).toAbsolutePath().toString();
 
         String[] pass1 = {
                 "ffmpeg", "-y",
@@ -163,6 +165,7 @@ public class Transcoder extends BaseStage {
                 "-deadline", "good",
                 "-tile-columns", "2",
                 "-threads", "4",
+                "-passlogfile", passlogPrefix,
                 "-pass", "1",
                 "-an",
                 "-f", "null", NULL_SINK
@@ -185,6 +188,7 @@ public class Transcoder extends BaseStage {
                 "-deadline", "good",
                 "-tile-columns", "2",
                 "-threads", "4",
+                "-passlogfile", passlogPrefix,
                 "-pass", "2",
                 "-c:a", "libopus", "-b:a", AUDIO_BITRATE,
                 outputPath
@@ -220,6 +224,11 @@ public class Transcoder extends BaseStage {
         } catch (Exception e) {
             return EncodeResult.failure(outputPath, "VP9 pass 2 exception: " + e.getMessage());
         }
+
+        try {
+            Files.deleteIfExists(Path.of(passlogPrefix + "-0.log"));
+            Files.deleteIfExists(Path.of(passlogPrefix + "-0.log.mbtree"));
+        } catch (IOException ignored) {}
 
         log.info("[{}] VP9 two-pass complete.", label);
         return EncodeResult.success(outputPath);
