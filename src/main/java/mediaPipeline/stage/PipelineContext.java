@@ -17,14 +17,9 @@ public class PipelineContext {
   public PipelineContext(VideoFile video, Path outputRoot) {
     this.video = video;
     this.outputRoot = outputRoot;
-    try {
-      createOutputDirs();
-    } catch (IOException e) {
-      throw new RuntimeException("Failed to create output dirs: " + e.getMessage(), e);
-    }
   }
 
-  private void createOutputDirs() throws IOException {
+  public void init() throws IOException {
     Files.createDirectories(outputRoot.resolve("video/h264"));
     Files.createDirectories(outputRoot.resolve("video/vp9"));
     Files.createDirectories(outputRoot.resolve("video/hevc"));
@@ -34,23 +29,10 @@ public class PipelineContext {
     Files.createDirectories(outputRoot.resolve("metadata"));
   }
 
-  public VideoFile video() {
-    return video;
-  }
+  public VideoFile video()      { return video; }
+  public Path      outputRoot() { return outputRoot; }
 
-  public Path outputRoot() {
-    return outputRoot;
-  }
-
-  public void put(String key, Object v) {
-    metadata.put(key, v);
-  }
-
-  public Object get(String key) {
-    return metadata.get(key);
-  }
-
-  public String getString(String key) {
-    return (String) metadata.get(key);
-  }
+  public void   put(String key, Object v) { metadata.put(key, v); }
+  public Object get(String key)           { return metadata.get(key); }
+  public String getString(String key)     { return (String) metadata.get(key); }
 }

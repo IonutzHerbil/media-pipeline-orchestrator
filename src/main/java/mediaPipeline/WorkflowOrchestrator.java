@@ -27,6 +27,7 @@ import mediaPipeline.stage.visuals.Transcoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +51,16 @@ public class WorkflowOrchestrator {
     }
 
     public PipelineReport run() {
+        try {
+            ctx.init();
+        } catch (IOException e) {
+            log.error("Failed to create output directories: {}", e.getMessage());
+            transition(PipelinePhase.FAILED);
+            return finish();
+        }
+
+        pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+
         transition(PipelinePhase.INGEST);
         if (!runIngest())      return finish();
 
@@ -151,7 +162,7 @@ public class WorkflowOrchestrator {
     }
 
     private PipelineReport finish() {
-        pool.shutdown();
+        if (pool != null) pool.shutdown();
         long totalMs = System.currentTimeMillis() - startMs;
         return new PipelineReport(
                 ctx.video().movieId(),
