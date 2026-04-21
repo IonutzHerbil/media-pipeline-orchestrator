@@ -48,10 +48,8 @@ public class SafetyScanner extends BaseStage {
     private static final Pattern TIMESTAMP_LINE = Pattern.compile(
             "^\\[(.+?) --> (.+?)\\]\\s+(.+)$"
     );
-
-    private static final double FLASH_LUMINANCE_DELTA = 0.20;
+    private static final double FLASH_DIFF_THRESHOLD  = 60.0;
     private static final int    FLASH_COUNT_THRESHOLD = 3;
-    private static final double SAMPLE_FPS            = 25.0;
     private static final double FLASH_WINDOW_SECS     = 1.0;
 
     @Override
@@ -63,7 +61,8 @@ public class SafetyScanner extends BaseStage {
 
         String transcriptPath = ctx.getString("transcript_path");
         if (transcriptPath == null)
-            return StageResult.fail(name(), "transcript_path missing — SpeechToText must run first", elapsed(t));
+            return StageResult.fail(name(),
+                    "transcript_path missing — SpeechToText must run first", elapsed(t));
 
         Path transcript = Path.of(transcriptPath);
         if (!Files.exists(transcript))
@@ -78,22 +77,19 @@ public class SafetyScanner extends BaseStage {
                 String start = m.group(1);
                 String end   = m.group(2);
                 String text  = m.group(3);
-                for (Map.Entry<Category, Set<String>> entry : WORDLISTS.entrySet()) {
+                for (Map.Entry<Category, Set<String>> entry : WORDLISTS.entrySet())
                     flags.addAll(scan(start, end, text, entry.getValue(), entry.getKey()));
-                }
             }
         } catch (IOException e) {
-            return StageResult.fail(name(), "Could not read transcript: " + e.getMessage(), elapsed(t));
+            return StageResult.fail(name(),
+                    "Could not read transcript: " + e.getMessage(), elapsed(t));
         }
 
-        String source = ctx.video().sourcePath().toAbsolutePath().toString();
-        flags.addAll(detectFlashes(source));
+        flags.addAll(detectFlashes(ctx.video().sourcePath().toAbsolutePath().toString()));
 
         Map<String, Long> summary = new LinkedHashMap<>();
         for (Category c : Category.values()) {
-            long count = flags.stream()
-                    .filter(f -> f.get("category").equals(c.name()))
-                    .count();
+            long count = flags.stream().filter(f -> f.get("category").equals(c.name())).count();
             summary.put(c.name(), count);
         }
 
@@ -109,7 +105,8 @@ public class SafetyScanner extends BaseStage {
                     )
             );
         } catch (IOException e) {
-            return StageResult.fail(name(), "Could not write safety_report.json: " + e.getMessage(), elapsed(t));
+            return StageResult.fail(name(),
+                    "Could not write safety_report.json: " + e.getMessage(), elapsed(t));
         }
 
         ctx.put("safety_flags", flags);
@@ -120,53 +117,68 @@ public class SafetyScanner extends BaseStage {
     private List<Map<String, Object>> detectFlashes(String source) {
         List<Map<String, Object>> flags = new ArrayList<>();
 
-        FfmpegUtil.ProcessOutput result = FfmpegUtil.run(
+        FfmpegUtil.ProcessOutput out = FfmpegUtil.run(
                 "ffmpeg", "-i", source,
-                "-vf", "fps=" + SAMPLE_FPS + ",signalstats",
+                "-vf", "scale=160:90,signalstats,metadata=print:file=-",
                 "-f", "null", "-"
         );
 
-        List<double[]> frames = parseLuminance(result.stderr());
-        if (frames.isEmpty()) return flags;
+        List<double[]> frames = parseLuminance(out.stdout() + "\n" + out.stderr());
+        if (frames.size() < 4) return flags;
 
-        int windowSize = (int)(SAMPLE_FPS * FLASH_WINDOW_SECS);
-
-        for (int i = windowSize; i < frames.size(); i++) {
-            int flashCount = 0;
-            for (int j = i - windowSize + 1; j <= i; j++) {
-                double delta = Math.abs(frames.get(j)[1] - frames.get(j - 1)[1]);
-                if (delta > FLASH_LUMINANCE_DELTA) flashCount++;
+        List<double[]> transitions = new ArrayList<>();
+        for (int i = 1; i < frames.size(); i++) {
+            double delta = frames.get(i)[1] - frames.get(i - 1)[1];
+            if (Math.abs(delta) >= FLASH_DIFF_THRESHOLD) {
+                transitions.add(new double[]{frames.get(i)[0], Math.signum(delta)});
             }
-            if (flashCount >= FLASH_COUNT_THRESHOLD) {
-                double ts = frames.get(i)[0];
+        }
+
+        for (int i = 0; i < transitions.size(); i++) {
+            double windowStart = transitions.get(i)[0];
+            int j = i, ups = 0, downs = 0;
+            while (j < transitions.size()
+                    && transitions.get(j)[0] - windowStart <= FLASH_WINDOW_SECS) {
+                if (transitions.get(j)[1] > 0) ups++; else downs++;
+                j++;
+            }
+            int count = ups + downs;
+            if (count >= FLASH_COUNT_THRESHOLD && ups >= 1 && downs >= 1) {
+                double windowEnd = transitions.get(j - 1)[0];
                 flags.add(Map.of(
-                        "start",    String.format("%.2f", ts - FLASH_WINDOW_SECS),
-                        "end",      String.format("%.2f", ts),
+                        "start",    String.format("%.2f", windowStart),
+                        "end",      String.format("%.2f", windowEnd + 0.1),
                         "category", Category.EPILEPSY_RISK.name(),
                         "action",   "review",
-                        "context",  flashCount + " flashes/sec detected (Harding test threshold: " + FLASH_COUNT_THRESHOLD + ")"
+                        "context",  count + " alternating luminance swings in "
+                                + FLASH_WINDOW_SECS + "s (Harding threshold: "
+                                + FLASH_COUNT_THRESHOLD + ")"
                 ));
-                i += windowSize;
+                i = j - 1;
             }
         }
 
         return flags;
     }
 
-    private List<double[]> parseLuminance(String stderr) {
+    private List<double[]> parseLuminance(String output) {
         List<double[]> frames = new ArrayList<>();
-        Pattern tsPattern  = Pattern.compile("pts_time:([\\d.]+)");
-        Pattern lumPattern = Pattern.compile("YAVG:([\\d.]+)");
+        Pattern tsPat   = Pattern.compile("pts_time:(-?[\\d.]+)");
+        Pattern yavgPat = Pattern.compile("lavfi\\.signalstats\\.YAVG=([\\d.]+)");
 
-        String[] lines = stderr.split("\\n");
-        double ts = 0;
-        for (String line : lines) {
-            Matcher tm = tsPattern.matcher(line);
-            Matcher lm = lumPattern.matcher(line);
-            if (tm.find()) ts = Double.parseDouble(tm.group(1));
-            if (lm.find()) {
-                double lum = Double.parseDouble(lm.group(1)) / 255.0;
-                frames.add(new double[]{ts, lum});
+        double currentTs = -1;
+        for (String line : output.split("\\r?\\n")) {
+            Matcher tm = tsPat.matcher(line);
+            if (tm.find()) {
+                try { currentTs = Double.parseDouble(tm.group(1)); }
+                catch (NumberFormatException ignored) {}
+                continue;
+            }
+            Matcher ym = yavgPat.matcher(line);
+            if (ym.find() && currentTs >= 0) {
+                try {
+                    frames.add(new double[]{currentTs, Double.parseDouble(ym.group(1))});
+                } catch (NumberFormatException ignored) {}
             }
         }
         return frames;
@@ -176,7 +188,6 @@ public class SafetyScanner extends BaseStage {
                                            Set<String> wordlist, Category category) {
         List<Map<String, Object>> found = new ArrayList<>();
         String lower = text.toLowerCase();
-
         for (String phrase : wordlist) {
             Pattern p = Pattern.compile(
                     "(?<![\\w])" + Pattern.quote(phrase) + "(?![\\w])",
