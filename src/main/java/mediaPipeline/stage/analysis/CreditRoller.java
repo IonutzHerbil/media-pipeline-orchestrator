@@ -1,6 +1,7 @@
 package mediaPipeline.stage.analysis;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -11,19 +12,15 @@ import mediaPipeline.util.FfmpegUtil;
 
 public class CreditRoller extends BaseStage {
 
-    private static final double CREDITS_WINDOW_RATIO = 0.20;
-    private static final double MAX_CREDITS_WINDOW_S = 300.0;
-    private static final double FALLBACK_RATIO        = 0.92;
-    private static final double LONG_SILENCE_S        = 2.0;
-    private static final String NOISE_FLOOR           = "-30dB";
-    private static final double MIN_SILENCE_S         = 0.5;
+    private static final double CREDITS_LOUDNESS_MARGIN = 10.0;
+    private static final double MIN_CREDITS_TAIL_S      = 5.0;
 
     @Override
     public String name() { return "CreditRoller"; }
 
     @Override
     protected StageResult run(PipelineContext ctx) {
-        long t          = System.currentTimeMillis();
+        long   t        = System.currentTimeMillis();
         double duration = getDouble(ctx, "duration");
 
         if (duration <= 0) {
@@ -31,75 +28,87 @@ public class CreditRoller extends BaseStage {
                     "duration missing from context — FormatValidator must run first", elapsed(t));
         }
 
-        String source    = ctx.video().sourcePath().toAbsolutePath().toString();
-        double window    = Math.min(duration * CREDITS_WINDOW_RATIO, MAX_CREDITS_WINDOW_S);
-        double scanStart = duration - window;
+        String source       = ctx.video().sourcePath().toAbsolutePath().toString();
+        Double creditsStart = detectCreditsStart(source, duration);
 
-        double creditsStart = detectCreditsStart(source, scanStart, window, duration);
+        if (creditsStart != null) {
+            ctx.put("credits_start_ts", creditsStart);
+            log.info("Credits start at: {}s (of {}s total)",
+                    String.format("%.2f", creditsStart),
+                    String.format("%.2f", duration));
+        } else {
+            log.info("No credits detected — dialogue continues to end of video.");
+        }
 
-        log.info("Credits start at: {}s (duration: {}s)",
-                String.format("%.2f", creditsStart),
-                String.format("%.2f", duration));
-
-        ctx.put("credits_start_ts", creditsStart);
         return StageResult.ok(name(), elapsed(t));
     }
 
-    private double detectCreditsStart(
-            String source, double scanStart, double window, double duration) {
-
-        FfmpegUtil.ProcessOutput out = FfmpegUtil.run(
-                "ffmpeg",
-                "-ss", String.format("%.3f", scanStart),
-                "-t",  String.format("%.3f", window),
-                "-i",  source,
-                "-af", "silencedetect=noise=" + NOISE_FLOOR + ":d=" + MIN_SILENCE_S,
-                "-f",  "null",
-                "-"
-        );
-
-        List<double[]> silences = parseSilences(out.stdout() + "\n" + out.stderr(), scanStart);
-
-        if (silences.isEmpty()) {
-            return fallback(duration);
+    private Double detectCreditsStart(String source, double duration) {
+        List<double[]> loudness = getLoudness(source);
+        if (loudness.size() < 20) {
+            log.info("Loudness samples too sparse ({}) — cannot detect credits.", loudness.size());
+            return null;
         }
 
-        for (double[] s : silences) {
-            if (s[1] >= LONG_SILENCE_S) {
-                log.info("Credits start at long silence: {}s", String.format("%.2f", s[0]));
-                return s[0];
+        double baseline = medianLoudness(loudness, duration * 0.3, duration * 0.7);
+        if (Double.isNaN(baseline)) return null;
+
+        double quietThreshold = baseline - CREDITS_LOUDNESS_MARGIN;
+        log.info("Baseline loudness (middle 40%): {} LUFS | quiet threshold: {} LUFS",
+                String.format("%.1f", baseline),
+                String.format("%.1f", quietThreshold));
+
+        double lastDialogueTs = -1;
+        for (int i = loudness.size() - 1; i >= 0; i--) {
+            if (loudness.get(i)[1] > quietThreshold) {
+                lastDialogueTs = loudness.get(i)[0];
+                break;
             }
         }
 
-        double[] first = silences.get(0);
-        log.info("Credits start at first silence: {}s", String.format("%.2f", first[0]));
-        return first[0];
+        if (lastDialogueTs < 0) return null;
+
+        double tail = duration - lastDialogueTs;
+        if (tail < MIN_CREDITS_TAIL_S) {
+            log.info("No credits: dialogue reaches {}s of {}s (quiet tail {}s < {}s required)",
+                    String.format("%.2f", lastDialogueTs),
+                    String.format("%.2f", duration),
+                    String.format("%.2f", tail),
+                    MIN_CREDITS_TAIL_S);
+            return null;
+        }
+
+        return lastDialogueTs;
     }
 
-    private List<double[]> parseSilences(String output, double offset) {
-        List<double[]> silences = new ArrayList<>();
+    private double medianLoudness(List<double[]> loudness, double from, double to) {
+        List<Double> window = new ArrayList<>();
+        for (double[] s : loudness) {
+            if (s[0] >= from && s[0] <= to) window.add(s[1]);
+        }
+        if (window.isEmpty()) return Double.NaN;
+        Collections.sort(window);
+        return window.get(window.size() / 2);
+    }
 
-        Pattern startPat = Pattern.compile("silence_start:\\s*([\\d.]+)");
-        Pattern durPat   = Pattern.compile("silence_duration:\\s*([\\d.]+)");
+    private List<double[]> getLoudness(String source) {
+        FfmpegUtil.ProcessOutput out = FfmpegUtil.run(
+                "ffmpeg", "-i", source,
+                "-af", "ebur128=peak=true",
+                "-f", "null", "-"
+        );
 
-        Matcher sm = startPat.matcher(output);
-        Matcher dm = durPat.matcher(output);
-
-        while (sm.find() && dm.find()) {
+        List<double[]> points = new ArrayList<>();
+        Pattern p = Pattern.compile("t:\\s*([\\d.]+).*?M:\\s*([\\-\\d.inf]+)");
+        Matcher m = p.matcher(out.stderr());
+        while (m.find()) {
             try {
-                double silenceStart    = Double.parseDouble(sm.group(1)) + offset;
-                double silenceDuration = Double.parseDouble(dm.group(1));
-                silences.add(new double[]{silenceStart, silenceDuration});
+                double ts   = Double.parseDouble(m.group(1));
+                double lufs = m.group(2).contains("inf") ? -120.0 : Double.parseDouble(m.group(2));
+                points.add(new double[]{ts, lufs});
             } catch (NumberFormatException ignored) {}
         }
-        return silences;
-    }
-
-    private double fallback(double duration) {
-        double ts = duration * FALLBACK_RATIO;
-        log.info("Credit detection inconclusive — heuristic fallback: {}s",
-                String.format("%.2f", ts));
-        return ts;
+        return points;
     }
 
     private double getDouble(PipelineContext ctx, String key) {
