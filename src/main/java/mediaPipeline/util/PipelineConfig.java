@@ -21,4 +21,8 @@ public class PipelineConfig {
     public static String scriptsDir() {
         return props.getProperty("workers.scripts.dir", "../media-pipeline-workers/scripts");
     }
+
+    public static String pythonExecutable() {
+        return props.getProperty("python.executable", "python3");
+    }
 }
